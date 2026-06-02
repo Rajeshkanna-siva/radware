@@ -36,7 +36,6 @@
         state: append
         parameters:
           index: "{{ server_group }}"
-          # This dynamically builds the exact list of server names you just created
           server_names: "{{ server_ips.split(',') | map('trim') | map('regex_replace', '^.*\\.(\\d+)$', server_name ~ '_\\1') | list }}"
 
     # -------------------------------------------------------------
@@ -49,4 +48,6 @@
           user: "{{ radware_username }}"
           password: "{{ radware_password }}"
           validate_certs: false
-        state: save
+        parameters:
+          command: save
+          file_path: flash
