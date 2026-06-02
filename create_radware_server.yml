@@ -41,13 +41,20 @@
     # -------------------------------------------------------------
     # STEP 3: APPLY AND SAVE CONFIGURATION TO FLASH
     # -------------------------------------------------------------
-    - name: Commit and Save changes to Radware Appliance
-      radware.radware_modules.alteon_device_configuration:
+    - name: Apply changes to Radware Appliance
+      radware.radware_modules.alteon_mng_config:
         provider:
           server: "{{ alteon_ip }}"
           user: "{{ radware_username }}"
           password: "{{ radware_password }}"
           validate_certs: false
-        parameters:
-          command: save
-          file_path: flash
+        command: apply
+
+    - name: Save configuration changes to Flash
+      radware.radware_modules.alteon_mng_config:
+        provider:
+          server: "{{ alteon_ip }}"
+          user: "{{ radware_username }}"
+          password: "{{ radware_password }}"
+          validate_certs: false
+        command: save
