@@ -24,7 +24,7 @@
       loop: "{{ server_ips.split(',') | map('trim') | list }}"
 
     # -------------------------------------------------------------
-    # STEP 2: ADD ALL THE NEWLY CREATED SERVERS TO THE GROUP
+    # STEP 2: MAP ALL SERVERS TO THE GROUP AT ONCE
     # -------------------------------------------------------------
     - name: Add Real Servers to Server Group
       radware.radware_modules.alteon_config_server_group:
@@ -36,8 +36,8 @@
         state: append
         parameters:
           index: "{{ server_group }}"
-          real_server_name: "{{ server_name }}_{{ item.split('.')[-1] }}"
-      loop: "{{ server_ips.split(',') | map('trim') | list }}"
+          # This dynamically builds the exact list of server names you just created
+          server_names: "{{ server_ips.split(',') | map('trim') | map('regex_replace', '^.*\\.(\\d+)$', server_name ~ '_\\1') | list }}"
 
     # -------------------------------------------------------------
     # STEP 3: APPLY AND SAVE CONFIGURATION TO FLASH
