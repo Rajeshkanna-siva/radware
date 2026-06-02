@@ -1,0 +1,48 @@
+---
+- name: Automate Radware Alteon Config using Official Collection
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Target Radware Appliance Management IP
+    alteon_ip: "192.168.210.91"
+    
+  tasks:
+    # -------------------------------------------------------------
+    # STEP 1: CREATE THE REAL SERVER USING OFFICIAL MODULE
+    # -------------------------------------------------------------
+    - name: Create Real Server
+      radware.radware_alteon.alteon_real_server:
+        provider:
+          server: "{{ alteon_ip }}"
+          user: "{{ radware_username }}"
+          password: "{{ radware_password }}"
+          validate_certs: false
+        name: "{{ server_name }}"
+        ip_address: "{{ server_ip }}"
+        state: present
+
+    # -------------------------------------------------------------
+    # STEP 2: ADD TO SERVER GROUP USING OFFICIAL MODULE
+    # -------------------------------------------------------------
+    - name: Add Real Server to Server Group
+      radware.radware_alteon.alteon_server_group:
+        provider:
+          server: "{{ alteon_ip }}"
+          user: "{{ radware_username }}"
+          password: "{{ radware_password }}"
+          validate_certs: false
+        name: "{{ server_group }}"
+        real_server: "{{ server_name }}"
+        state: present
+
+    # -------------------------------------------------------------
+    # STEP 3: APPLY AND SAVE CONFIGURATION TO FLASH
+    # -------------------------------------------------------------
+    - name: Commit and Save changes to Radware Appliance
+      radware.radware_alteon.alteon_config:
+        provider:
+          server: "{{ alteon_ip }}"
+          user: "{{ radware_username }}"
+          password: "{{ radware_password }}"
+          validate_certs: false
+        action: save
