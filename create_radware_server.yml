@@ -10,7 +10,7 @@
     # STEP 1: CREATE MULTIPLE REAL SERVERS
     # -------------------------------------------------------------
     - name: Create Real Servers
-      [cite_start]radware.radware_modules.alteon_config_server: [cite: 7]
+      radware.radware_modules.alteon_config_server:
         provider:
           server: "{{ alteon_ip }}"
           user: "{{ radware_username }}"
@@ -18,18 +18,16 @@
           validate_certs: false
         state: present
         parameters:
-          # We append the last octet of the IP to the server name to keep it unique
           index: "{{ server_name }}_{{ item.split('.')[-1] }}"
           ip_address: "{{ item }}"
           state: enabled
-      # This loop splits your comma-separated string (e.g., "10.10.10.1,10.10.10.2") into individual IPs
       loop: "{{ server_ips.split(',') | map('trim') | list }}"
 
     # -------------------------------------------------------------
     # STEP 2: ADD ALL THE NEWLY CREATED SERVERS TO THE GROUP
     # -------------------------------------------------------------
     - name: Add Real Servers to Server Group
-      [cite_start]radware.radware_modules.alteon_config_server_group: [cite: 7]
+      radware.radware_modules.alteon_config_server_group:
         provider:
           server: "{{ alteon_ip }}"
           user: "{{ radware_username }}"
@@ -45,7 +43,7 @@
     # STEP 3: APPLY AND SAVE CONFIGURATION TO FLASH
     # -------------------------------------------------------------
     - name: Commit and Save changes to Radware Appliance
-      [cite_start]radware.radware_modules.alteon_device_configuration: [cite: 13]
+      radware.radware_modules.alteon_device_configuration:
         provider:
           server: "{{ alteon_ip }}"
           user: "{{ radware_username }}"
