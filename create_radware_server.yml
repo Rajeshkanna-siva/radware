@@ -3,46 +3,52 @@
   hosts: localhost
   gather_facts: false
   vars:
-    # Target Radware Appliance Management IP
     alteon_ip: "192.168.210.91"
-    
+
   tasks:
     # -------------------------------------------------------------
-    # STEP 1: CREATE THE REAL SERVER USING OFFICIAL MODULE
+    # STEP 1: CREATE MULTIPLE REAL SERVERS
     # -------------------------------------------------------------
-    - name: Create Real Server
-      radware.radware_alteon.alteon_real_server:
+    - name: Create Real Servers
+      [cite_start]radware.radware_modules.alteon_config_server: [cite: 7]
         provider:
           server: "{{ alteon_ip }}"
           user: "{{ radware_username }}"
           password: "{{ radware_password }}"
           validate_certs: false
-        name: "{{ server_name }}"
-        ip_address: "{{ server_ip }}"
         state: present
+        parameters:
+          # We append the last octet of the IP to the server name to keep it unique
+          index: "{{ server_name }}_{{ item.split('.')[-1] }}"
+          ip_address: "{{ item }}"
+          state: enabled
+      # This loop splits your comma-separated string (e.g., "10.10.10.1,10.10.10.2") into individual IPs
+      loop: "{{ server_ips.split(',') | map('trim') | list }}"
 
     # -------------------------------------------------------------
-    # STEP 2: ADD TO SERVER GROUP USING OFFICIAL MODULE
+    # STEP 2: ADD ALL THE NEWLY CREATED SERVERS TO THE GROUP
     # -------------------------------------------------------------
-    - name: Add Real Server to Server Group
-      radware.radware_alteon.alteon_server_group:
+    - name: Add Real Servers to Server Group
+      [cite_start]radware.radware_modules.alteon_config_server_group: [cite: 7]
         provider:
           server: "{{ alteon_ip }}"
           user: "{{ radware_username }}"
           password: "{{ radware_password }}"
           validate_certs: false
-        name: "{{ server_group }}"
-        real_server: "{{ server_name }}"
-        state: present
+        state: append
+        parameters:
+          index: "{{ server_group }}"
+          real_server_name: "{{ server_name }}_{{ item.split('.')[-1] }}"
+      loop: "{{ server_ips.split(',') | map('trim') | list }}"
 
     # -------------------------------------------------------------
     # STEP 3: APPLY AND SAVE CONFIGURATION TO FLASH
     # -------------------------------------------------------------
     - name: Commit and Save changes to Radware Appliance
-      radware.radware_alteon.alteon_config:
+      [cite_start]radware.radware_modules.alteon_device_configuration: [cite: 13]
         provider:
           server: "{{ alteon_ip }}"
           user: "{{ radware_username }}"
           password: "{{ radware_password }}"
           validate_certs: false
-        action: save
+        state: save
