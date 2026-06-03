@@ -116,11 +116,20 @@
         - operation == 'create_server'
         - create_server_result is succeeded
 
-    # =========================================================================
-    # OPERATION 2 — ADD SERVER(S) TO EXISTING GROUP
+# =========================================================================
+    # OPERATION 2 — ADD SERVER(S) TO EXISTING GROUP (auto-creates if not exists)
     # Required vars: server_input, target_group
     # Optional vars: server_name_prefix (if server_input contains IPs)
     # =========================================================================
+    - name: "ADD TO GROUP | Ensure group '{{ target_group | default('') }}' exists"
+      radware.radware_modules.alteon_config_server_group:
+        provider: "{{ radware_provider }}"
+        state: present
+        parameters:
+          index: "{{ target_group }}"
+      register: create_group_result
+      when: operation == 'add_to_group'
+
     - name: "ADD TO GROUP | Add {{ _resolved_server_list }} to group '{{ target_group | default('') }}'"
       radware.radware_modules.alteon_config_server_group:
         provider: "{{ radware_provider }}"
@@ -134,8 +143,9 @@
     - name: "ADD TO GROUP | Result"
       ansible.builtin.debug:
         msg: >-
-          SUCCESS: Server(s) {{ _resolved_server_list }} added to
-          group '{{ target_group }}' on Alteon {{ alteon_ip }}.
+          SUCCESS: Group '{{ target_group }}' is ready and
+          server(s) {{ _resolved_server_list }} added
+          on Alteon {{ alteon_ip }}.
       when:
         - operation == 'add_to_group'
         - add_group_result is succeeded
