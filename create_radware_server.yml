@@ -42,7 +42,7 @@
 ###############################################################################
 
 - name: Radware Alteon — Server & Group Management
-  hosts: "{{ target_host | default('alteon') }}"
+  hosts: localhost
   gather_facts: false
   connection: local
 
