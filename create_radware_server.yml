@@ -1,60 +1,513 @@
 ---
-- name: Automate Radware Alteon Config using Official Collection
-  hosts: localhost
-  gather_facts: false
-  vars:
-    alteon_ip: "192.168.210.91"
+###############################################################################
+#  Radware Alteon — Server & Group Management Playbook
+#  ---------------------------------------------------------
+#  Operations:
+#    1.  create_server       — Create a real server with custom name
+#    2.  add_to_group        — Add server(s) to an existing group
+#    3.  delete_server       — Delete a server (warning + confirm)
+#    4.  toggle_server       — Enable or disable a real server
+#    5.  rename_server       — Rename an existing server
+#    6.  remove_from_group   — Remove server(s) from a group
+#    7.  delete_group        — Delete a group (warning + confirm)
+#    8.  toggle_group        — Enable or disable a group (all members)
+#    9.  apply_only          — Apply config without saving (test mode)
+#
+#  Usage example:
+#    ansible-playbook radware_alteon_manage.yml \
+#      -e "operation=create_server" \
+#      -e "server_name=web_01" \
+#      -e "server_ip=10.0.0.1" \
+#      -e "server_group=grp_web"
+#
+#  Variables reference per operation:
+#    create_server    : server_name, server_ip
+#    add_to_group     : server_input, server_name_prefix (if IPs given), target_group
+#    delete_server    : server_name  (or server_ip + server_name_prefix)
+#    toggle_server    : server_input, server_name_prefix (if IPs given), server_state (enabled/disabled)
+#    rename_server    : old_server_name, new_server_name, server_ip
+#    remove_from_group: server_input, server_name_prefix (if IPs given), source_group
+#    delete_group     : group_name
+#    toggle_group     : group_name, server_input, server_name_prefix (if IPs given), server_state
+#    apply_only       : (no extra vars needed)
+#
+#  Notes:
+#    - server_input accepts names  : "web_01,web_02"
+#                        OR IPs    : "10.0.0.1,10.0.0.2"
+#      When IPs are given, server_name_prefix must also be set.
+#      Example: server_name_prefix=web  +  10.0.0.1  =>  web_1
+#
+#    - alteon_ip is set in inventory host vars (not hardcoded here)
+#    - radware_username and radware_password come from inventory / vault
+###############################################################################
 
+- name: Radware Alteon — Server & Group Management
+  hosts: "{{ target_host | default('alteon') }}"
+  gather_facts: false
+  connection: local
+
+  vars:
+    # ── provider block (pulled from inventory / extra-vars) ──────────────────
+    radware_provider:
+      server: "{{ alteon_ip }}"
+      user: "{{ radware_username }}"
+      password: "{{ radware_password }}"
+      validate_certs: false
+      https_port: "{{ alteon_https_port | default(443) }}"
+      ssh_port: "{{ alteon_ssh_port | default(22) }}"
+      timeout: "{{ alteon_timeout | default(30) }}"
+
+    # ── smart name resolution ─────────────────────────────────────────────────
+    # Converts "10.0.0.1,10.0.0.2" → ["web_1","web_2"]
+    # Passes "web_01,web_02"        → ["web_01","web_02"] unchanged
+    _raw_input_list: >-
+      {{ (server_input | default('')) .split(',') | map('trim') | list }}
+
+    _resolved_server_list: >-
+      {%- set result = [] -%}
+      {%- for item in _raw_input_list -%}
+        {%- if item | regex_search('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$') -%}
+          {%- set _ = result.append(
+                (server_name_prefix | default('server')) ~ '_' ~
+                item.split('.')[-1]
+              ) -%}
+        {%- else -%}
+          {%- set _ = result.append(item) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ result }}
+
+  # ===========================================================================
   tasks:
-    # -------------------------------------------------------------
-    # STEP 1: CREATE MULTIPLE REAL SERVERS
-    # -------------------------------------------------------------
-    - name: Create Real Servers
+
+    # ── GUARD: validate operation is provided ─────────────────────────────────
+    - name: "VALIDATE | Operation must be specified"
+      ansible.builtin.fail:
+        msg: |
+          ERROR: No operation specified.
+          Please pass -e "operation=<op_name>"
+          Valid operations:
+            create_server, add_to_group, delete_server, toggle_server,
+            rename_server, remove_from_group, delete_group, toggle_group,
+            apply_only
+      when: operation is not defined
+
+    # =========================================================================
+    # OPERATION 1 — CREATE SERVER WITH CUSTOM NAME
+    # Required vars: server_name, server_ip
+    # =========================================================================
+    - name: "CREATE SERVER | Create real server '{{ server_name | default('') }}'"
       radware.radware_modules.alteon_config_server:
-        provider:
-          server: "{{ alteon_ip }}"
-          user: "{{ radware_username }}"
-          password: "{{ radware_password }}"
-          validate_certs: false
+        provider: "{{ radware_provider }}"
         state: present
         parameters:
-          index: "{{ server_name }}_{{ item.split('.')[-1] }}"
-          ip_address: "{{ item }}"
+          index: "{{ server_name }}"
+          ip_address: "{{ server_ip }}"
           state: enabled
-      loop: "{{ server_ips.split(',') | map('trim') | list }}"
+      register: create_server_result
+      when: operation == 'create_server'
 
-    # -------------------------------------------------------------
-    # STEP 2: MAP ALL SERVERS TO THE GROUP AT ONCE
-    # -------------------------------------------------------------
-    - name: Add Real Servers to Server Group
+    - name: "CREATE SERVER | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Server '{{ server_name }}' created with IP {{ server_ip }}
+          on Alteon {{ alteon_ip }}.
+      when:
+        - operation == 'create_server'
+        - create_server_result is succeeded
+
+    # =========================================================================
+    # OPERATION 2 — ADD SERVER(S) TO EXISTING GROUP
+    # Required vars: server_input, target_group
+    # Optional vars: server_name_prefix (if server_input contains IPs)
+    # =========================================================================
+    - name: "ADD TO GROUP | Add {{ _resolved_server_list }} to group '{{ target_group | default('') }}'"
       radware.radware_modules.alteon_config_server_group:
-        provider:
-          server: "{{ alteon_ip }}"
-          user: "{{ radware_username }}"
-          password: "{{ radware_password }}"
-          validate_certs: false
-        state: append
+        provider: "{{ radware_provider }}"
+        state: present
         parameters:
-          index: "{{ server_group }}"
-          server_names: "{{ server_ips.split(',') | map('trim') | map('regex_replace', '^.*\\.(\\d+)$', server_name ~ '_\\1') | list }}"
+          index: "{{ target_group }}"
+          server_names: "{{ _resolved_server_list }}"
+      register: add_group_result
+      when: operation == 'add_to_group'
 
-    # -------------------------------------------------------------
-    # STEP 3: APPLY AND SAVE CONFIGURATION TO FLASH
-    # -------------------------------------------------------------
-    - name: Apply changes to Radware Appliance
+    - name: "ADD TO GROUP | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Server(s) {{ _resolved_server_list }} added to
+          group '{{ target_group }}' on Alteon {{ alteon_ip }}.
+      when:
+        - operation == 'add_to_group'
+        - add_group_result is succeeded
+
+    # =========================================================================
+    # OPERATION 3 — DELETE SERVER (warning + confirm)
+    # Required vars: server_name  OR  server_ip + server_name_prefix
+    # =========================================================================
+    - name: "DELETE SERVER | Resolve server name from input"
+      ansible.builtin.set_fact:
+        _delete_server_name: >-
+          {%- if server_name is defined and server_name != '' -%}
+            {{ server_name }}
+          {%- elif server_ip is defined -%}
+            {{ (server_name_prefix | default('server')) ~ '_' ~ server_ip.split('.')[-1] }}
+          {%- else -%}
+            UNKNOWN
+          {%- endif -%}
+      when: operation == 'delete_server'
+
+    - name: "DELETE SERVER | Collect current device facts"
+      radware.radware_modules.alteon_device_facts:
+        provider: "{{ radware_provider }}"
+        parameters:
+          - slb_server_group
+      register: device_facts
+      when: operation == 'delete_server'
+
+    - name: "DELETE SERVER | Find which groups contain this server"
+      ansible.builtin.set_fact:
+        _server_in_groups: >-
+          {%- set groups_found = [] -%}
+          {%- if device_facts.ansible_facts is defined -%}
+            {%- for grp in device_facts.ansible_facts.get('slb_server_group', []) -%}
+              {%- if _delete_server_name in (grp.get('server_names', []) | default([])) -%}
+                {%- set _ = groups_found.append(grp.get('index','?')) -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+          {{ groups_found }}
+      when: operation == 'delete_server'
+
+    - name: "DELETE SERVER | WARNING — server group membership"
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          WARNING: Server '{{ _delete_server_name }}' is currently a
+          member of the following group(s):
+            {{ _server_in_groups | join(', ') if _server_in_groups else 'None' }}
+
+          The server will be DELETED from Alteon {{ alteon_ip }}.
+          This action CANNOT be undone.
+          ============================================================
+      when: operation == 'delete_server'
+
+    - name: "DELETE SERVER | Confirm deletion"
+      ansible.builtin.pause:
+        prompt: >-
+          Type YES to confirm deletion of server '{{ _delete_server_name }}'
+          (anything else will abort)
+      register: delete_confirm
+      when: operation == 'delete_server'
+
+    - name: "DELETE SERVER | Abort if not confirmed"
+      ansible.builtin.fail:
+        msg: "ABORTED: Deletion of server '{{ _delete_server_name }}' was cancelled by user."
+      when:
+        - operation == 'delete_server'
+        - delete_confirm.user_input | upper != 'YES'
+
+    - name: "DELETE SERVER | Delete the server"
+      radware.radware_modules.alteon_config_server:
+        provider: "{{ radware_provider }}"
+        state: absent
+        parameters:
+          index: "{{ _delete_server_name }}"
+      register: delete_server_result
+      when:
+        - operation == 'delete_server'
+        - delete_confirm.user_input | upper == 'YES'
+
+    - name: "DELETE SERVER | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Server '{{ _delete_server_name }}' has been deleted
+          from Alteon {{ alteon_ip }}.
+      when:
+        - operation == 'delete_server'
+        - delete_confirm.user_input | upper == 'YES'
+        - delete_server_result is succeeded
+
+    # =========================================================================
+    # OPERATION 4 — ENABLE / DISABLE A SERVER
+    # Required vars: server_input, server_state (enabled / disabled)
+    # Optional vars: server_name_prefix (if server_input contains IPs)
+    # =========================================================================
+    - name: "TOGGLE SERVER | Validate server_state value"
+      ansible.builtin.fail:
+        msg: "ERROR: server_state must be 'enabled' or 'disabled'. Got: '{{ server_state | default('') }}'"
+      when:
+        - operation == 'toggle_server'
+        - server_state | default('') not in ['enabled', 'disabled']
+
+    - name: "TOGGLE SERVER | Set state for {{ _resolved_server_list }}"
+      radware.radware_modules.alteon_config_server:
+        provider: "{{ radware_provider }}"
+        state: present
+        parameters:
+          index: "{{ item }}"
+          state: "{{ server_state }}"
+      loop: "{{ _resolved_server_list }}"
+      register: toggle_server_result
+      when: operation == 'toggle_server'
+
+    - name: "TOGGLE SERVER | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Server(s) {{ _resolved_server_list }} set to
+          '{{ server_state }}' on Alteon {{ alteon_ip }}.
+      when:
+        - operation == 'toggle_server'
+        - toggle_server_result is succeeded
+
+    # =========================================================================
+    # OPERATION 5 — RENAME A SERVER
+    # Required vars: old_server_name, new_server_name, server_ip
+    # Note: In Alteon, index IS the name. Rename = create new + delete old.
+    # =========================================================================
+    - name: "RENAME SERVER | Create server with new name '{{ new_server_name | default('') }}'"
+      radware.radware_modules.alteon_config_server:
+        provider: "{{ radware_provider }}"
+        state: present
+        parameters:
+          index: "{{ new_server_name }}"
+          ip_address: "{{ server_ip }}"
+          state: enabled
+      register: rename_create_result
+      when: operation == 'rename_server'
+
+    - name: "RENAME SERVER | Delete old server '{{ old_server_name | default('') }}'"
+      radware.radware_modules.alteon_config_server:
+        provider: "{{ radware_provider }}"
+        state: absent
+        parameters:
+          index: "{{ old_server_name }}"
+      register: rename_delete_result
+      when:
+        - operation == 'rename_server'
+        - rename_create_result is succeeded
+
+    - name: "RENAME SERVER | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Server renamed from '{{ old_server_name }}' to
+          '{{ new_server_name }}' (IP: {{ server_ip }}) on Alteon {{ alteon_ip }}.
+      when:
+        - operation == 'rename_server'
+        - rename_delete_result is succeeded
+
+    # =========================================================================
+    # OPERATION 6 — REMOVE SERVER(S) FROM A GROUP
+    # Required vars: server_input, source_group
+    # Optional vars: server_name_prefix (if server_input contains IPs)
+    # =========================================================================
+    - name: "REMOVE FROM GROUP | Remove {{ _resolved_server_list }} from '{{ source_group | default('') }}'"
+      radware.radware_modules.alteon_config_group_real_server:
+        provider: "{{ radware_provider }}"
+        state: absent
+        parameters:
+          group_index: "{{ source_group }}"
+          real_server_index: "{{ item }}"
+      loop: "{{ _resolved_server_list }}"
+      register: remove_group_result
+      when: operation == 'remove_from_group'
+
+    - name: "REMOVE FROM GROUP | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Server(s) {{ _resolved_server_list }} removed from
+          group '{{ source_group }}' on Alteon {{ alteon_ip }}.
+      when:
+        - operation == 'remove_from_group'
+        - remove_group_result is succeeded
+
+    # =========================================================================
+    # OPERATION 7 — DELETE A GROUP (warning + confirm)
+    # Required vars: group_name
+    # =========================================================================
+    - name: "DELETE GROUP | Collect current device facts"
+      radware.radware_modules.alteon_device_facts:
+        provider: "{{ radware_provider }}"
+        parameters:
+          - slb_server_group
+      register: group_facts
+      when: operation == 'delete_group'
+
+    - name: "DELETE GROUP | Find group members"
+      ansible.builtin.set_fact:
+        _group_members: >-
+          {%- set members = [] -%}
+          {%- if group_facts.ansible_facts is defined -%}
+            {%- for grp in group_facts.ansible_facts.get('slb_server_group', []) -%}
+              {%- if grp.get('index','') == group_name -%}
+                {%- set _ = members.extend(grp.get('server_names', [])) -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+          {{ members }}
+      when: operation == 'delete_group'
+
+    - name: "DELETE GROUP | WARNING — group member list"
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          WARNING: Group '{{ group_name }}' contains the following
+          server(s):
+            {{ _group_members | join(', ') if _group_members else 'No servers found' }}
+
+          The group will be DELETED from Alteon {{ alteon_ip }}.
+          Member servers will NOT be deleted — only removed from group.
+          This action CANNOT be undone.
+          ============================================================
+      when: operation == 'delete_group'
+
+    - name: "DELETE GROUP | Confirm deletion"
+      ansible.builtin.pause:
+        prompt: >-
+          Type YES to confirm deletion of group '{{ group_name }}'
+          (anything else will abort)
+      register: delete_group_confirm
+      when: operation == 'delete_group'
+
+    - name: "DELETE GROUP | Abort if not confirmed"
+      ansible.builtin.fail:
+        msg: "ABORTED: Deletion of group '{{ group_name }}' was cancelled by user."
+      when:
+        - operation == 'delete_group'
+        - delete_group_confirm.user_input | upper != 'YES'
+
+    - name: "DELETE GROUP | Delete the group"
+      radware.radware_modules.alteon_config_server_group:
+        provider: "{{ radware_provider }}"
+        state: absent
+        parameters:
+          index: "{{ group_name }}"
+      register: delete_group_result
+      when:
+        - operation == 'delete_group'
+        - delete_group_confirm.user_input | upper == 'YES'
+
+    - name: "DELETE GROUP | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Group '{{ group_name }}' deleted from Alteon {{ alteon_ip }}.
+          Former members were: {{ _group_members | join(', ') if _group_members else 'None' }}
+      when:
+        - operation == 'delete_group'
+        - delete_group_confirm.user_input | upper == 'YES'
+        - delete_group_result is succeeded
+
+    # =========================================================================
+    # OPERATION 8 — ENABLE / DISABLE A GROUP (all its member servers)
+    # Required vars: group_name, server_input, server_state (enabled/disabled)
+    # Optional vars: server_name_prefix (if server_input contains IPs)
+    # =========================================================================
+    - name: "TOGGLE GROUP | Validate server_state value"
+      ansible.builtin.fail:
+        msg: "ERROR: server_state must be 'enabled' or 'disabled'. Got: '{{ server_state | default('') }}'"
+      when:
+        - operation == 'toggle_group'
+        - server_state | default('') not in ['enabled', 'disabled']
+
+    - name: "TOGGLE GROUP | Set state for each server in group '{{ group_name | default('') }}'"
+      radware.radware_modules.alteon_config_group_real_server:
+        provider: "{{ radware_provider }}"
+        state: present
+        parameters:
+          group_index: "{{ group_name }}"
+          real_server_index: "{{ item }}"
+          real_server_status: "{{ server_state }}"
+      loop: "{{ _resolved_server_list }}"
+      register: toggle_group_result
+      when: operation == 'toggle_group'
+
+    - name: "TOGGLE GROUP | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: All servers {{ _resolved_server_list }} in group
+          '{{ group_name }}' set to '{{ server_state }}' on Alteon {{ alteon_ip }}.
+      when:
+        - operation == 'toggle_group'
+        - toggle_group_result is succeeded
+
+    # =========================================================================
+    # OPERATION 9 — APPLY ONLY (no save — test mode)
+    # No extra vars needed
+    # =========================================================================
+    - name: "APPLY ONLY | Apply config to running (no flash save)"
       radware.radware_modules.alteon_mng_config:
-        provider:
-          server: "{{ alteon_ip }}"
-          user: "{{ radware_username }}"
-          password: "{{ radware_password }}"
-          validate_certs: false
+        provider: "{{ radware_provider }}"
         command: apply
+      register: apply_only_result
+      when: operation == 'apply_only'
 
-    - name: Save configuration changes to Flash
+    - name: "APPLY ONLY | Result"
+      ansible.builtin.debug:
+        msg: >-
+          SUCCESS: Configuration applied to Alteon {{ alteon_ip }}.
+          NOTE: Config is NOT saved to flash. It will be lost on reboot.
+      when:
+        - operation == 'apply_only'
+        - apply_only_result is succeeded
+
+    # =========================================================================
+    # FINAL STEP — APPLY + SAVE (runs after all operations except apply_only
+    #              and delete operations which handle their own flow)
+    # =========================================================================
+    - name: "SAVE | Apply configuration changes"
       radware.radware_modules.alteon_mng_config:
-        provider:
-          server: "{{ alteon_ip }}"
-          user: "{{ radware_username }}"
-          password: "{{ radware_password }}"
-          validate_certs: false
+        provider: "{{ radware_provider }}"
+        command: apply
+      when: operation not in ['apply_only', 'delete_server', 'delete_group']
+
+    - name: "SAVE | Save configuration to flash"
+      radware.radware_modules.alteon_mng_config:
+        provider: "{{ radware_provider }}"
         command: save
+      register: save_result
+      when: operation not in ['apply_only', 'delete_server', 'delete_group']
+
+    - name: "SAVE | Confirm saved"
+      ansible.builtin.debug:
+        msg: "SUCCESS: Configuration saved to flash on Alteon {{ alteon_ip }}."
+      when:
+        - operation not in ['apply_only', 'delete_server', 'delete_group']
+        - save_result is succeeded
+
+    # =========================================================================
+    # APPLY + SAVE after delete operations (only if confirmed)
+    # =========================================================================
+    - name: "SAVE | Apply after delete_server"
+      radware.radware_modules.alteon_mng_config:
+        provider: "{{ radware_provider }}"
+        command: apply
+      when:
+        - operation == 'delete_server'
+        - delete_confirm is defined
+        - delete_confirm.user_input | upper == 'YES'
+
+    - name: "SAVE | Save after delete_server"
+      radware.radware_modules.alteon_mng_config:
+        provider: "{{ radware_provider }}"
+        command: save
+      when:
+        - operation == 'delete_server'
+        - delete_confirm is defined
+        - delete_confirm.user_input | upper == 'YES'
+
+    - name: "SAVE | Apply after delete_group"
+      radware.radware_modules.alteon_mng_config:
+        provider: "{{ radware_provider }}"
+        command: apply
+      when:
+        - operation == 'delete_group'
+        - delete_group_confirm is defined
+        - delete_group_confirm.user_input | upper == 'YES'
+
+    - name: "SAVE | Save after delete_group"
+      radware.radware_modules.alteon_mng_config:
+        provider: "{{ radware_provider }}"
+        command: save
+      when:
+        - operation == 'delete_group'
+        - delete_group_confirm is defined
+        - delete_group_confirm.user_input | upper == 'YES'
